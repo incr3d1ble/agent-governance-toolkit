@@ -287,8 +287,25 @@ class MCPMessageSigner:
         sender_id: str | None,
         payload: str,
     ) -> str:
+        """Return the versioned, injective canonical signing string.
+
+        Tagged ``mcp-sig-v2`` and shared with the Rust signer
+        (``agent-governance-rust/agentmesh-mcp``). Every field is
+        length-prefixed with its UTF-8 byte length, so a separator character
+        (``|`` or ``:``) inside any field can never merge two distinct field
+        tuples into the same HMAC input (#4199). ``sender_id=None`` and
+        ``""`` share the single ``0:`` encoding. The millisecond timestamp is
+        placed last.
+        """
         timestamp_ms = int(timestamp.timestamp() * 1000)
-        return f"{nonce}|{timestamp_ms}|{sender_id or ''}|{payload}"
+        sender = sender_id or ""
+        return (
+            "mcp-sig-v2"
+            + f"|{len(nonce.encode('utf-8'))}:{nonce}"
+            + f"|{len(sender.encode('utf-8'))}:{sender}"
+            + f"|{len(payload.encode('utf-8'))}:{payload}"
+            + f"|{timestamp_ms}"
+        )
 
     def _maybe_cleanup_locked(self, now: datetime) -> None:
         if now - self._last_cleanup >= self.nonce_cache_cleanup_interval:
