@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 import logging
 import secrets
 import threading
@@ -65,6 +66,11 @@ class MCPMessageSigner:
     replay window so previously accepted messages cannot be replayed
     indefinitely. Persistence and nonce generation are injectable to support
     deterministic tests and external storage backends.
+
+    Signatures use the versioned v2 canonical encoding. Both peers must
+    upgrade together; legacy delimiter-based signatures are never accepted.
+    Integrity verification does not replace sender authorization or payload
+    policy checks.
     """
 
     def __init__(
@@ -166,11 +172,6 @@ class MCPMessageSigner:
             A signed envelope containing the payload, nonce, timestamp, and
             computed signature.
         """
-        if payload is None:
-            raise ValueError("payload must not be None")
-        if not payload.strip():
-            raise ValueError("payload must not be empty")
-
         timestamp = _utcnow()
         nonce = self._nonce_generator()
         signature = self._compute_signature(
@@ -287,24 +288,26 @@ class MCPMessageSigner:
         sender_id: str | None,
         payload: str,
     ) -> str:
-        """Return the versioned, injective canonical signing string.
+        """Encode typed fields without ambiguous boundaries or precision loss."""
+        if not isinstance(payload, str) or not payload.strip():
+            raise ValueError("payload must be a non-empty string")
+        if not isinstance(nonce, str) or not nonce.strip():
+            raise ValueError("nonce must be a non-empty string")
+        if sender_id is not None and not isinstance(sender_id, str):
+            raise ValueError("sender_id must be a string or None")
+        if not isinstance(timestamp, datetime) or timestamp.utcoffset() is None:
+            raise ValueError("timestamp must be a timezone-aware datetime")
 
-        Tagged ``mcp-sig-v2`` and shared with the Rust signer
-        (``agent-governance-rust/agentmesh-mcp``). Every field is
-        length-prefixed with its UTF-8 byte length, so a separator character
-        (``|`` or ``:``) inside any field can never merge two distinct field
-        tuples into the same HMAC input (#4199). ``sender_id=None`` and
-        ``""`` share the single ``0:`` encoding. The millisecond timestamp is
-        placed last.
-        """
-        timestamp_ms = int(timestamp.timestamp() * 1000)
-        sender = sender_id or ""
-        return (
-            "mcp-sig-v2"
-            + f"|{len(nonce.encode('utf-8'))}:{nonce}"
-            + f"|{len(sender.encode('utf-8'))}:{sender}"
-            + f"|{len(payload.encode('utf-8'))}:{payload}"
-            + f"|{timestamp_ms}"
+        return json.dumps(
+            [
+                "agent-os:mcp-message:v2",
+                nonce,
+                timestamp.astimezone(UTC).isoformat(timespec="microseconds"),
+                sender_id,
+                payload,
+            ],
+            ensure_ascii=False,
+            separators=(",", ":"),
         )
 
     def _maybe_cleanup_locked(self, now: datetime) -> None:
